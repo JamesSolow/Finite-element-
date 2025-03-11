@@ -1,12 +1,28 @@
-function sobolev_gradient_newton_method(nx, ny, Lx, Ly, A, x0, y0, sigma)
+function sobolev_gradient_newton_method(nx, ny, Lx, Ly, A, sigma)
     % Create a regular grid of Morley elements
     [nodes, elements] = create_morley_grid(nx, ny, Lx, Ly);
-    
+    % Number of wavelengths in each direction
+    nx_waves = 3;
+    ny_waves = 2;
+
+    % Wave numbers
+    kx = 2 * pi * nx_waves / Lx;
+    ky = 2 * pi * ny_waves / Ly;
+  
     % Generate the initial condition for the stream function psi
-    psi = generate_eddy_initial_condition(nodes, A, x0, y0, sigma);
+    psi = generate_sinusoidal_initial_condition_with_nodes(nodes, A, kx, ky);  
     
     % Initial guess for the solution (flatten the psi matrix to a vector)
     u = psi;
+    
+    % Plot the initial condition
+    figure;
+    trisurf(elements, nodes(:,1), nodes(:,2), psi, 'EdgeColor', 'none');
+    colorbar;
+    title('Initial Condition for Stream Function \psi (Sinusoidal)');
+    xlabel('x');
+    ylabel('y');
+    zlabel('psi');
     
     % Newton method parameters
     max_iter = 20;
@@ -18,9 +34,17 @@ function sobolev_gradient_newton_method(nx, ny, Lx, Ly, A, x0, y0, sigma)
     
     % Perform the Newton method
     grad_evals = 0;
+    coefficients = cell(size(elements, 1), 1); % Store coefficients for each element
+    for elem = 1:size(elements, 1)
+        element_nodes = elements(elem, :);
+        element_coords = nodes(element_nodes, :);
+        ue = u(element_nodes);
+        coefficients{elem} = calculate_coefficients(element_coords, ue);
+    end
+    
     for iter = 1:max_iter
         % Compute the gradient and Hessian of the energy functional
-        [grad, hess] = compute_gradient_hessian(u, nodes, elements, reg_param);
+        [grad, hess] = compute_gradient_hessian(u, nodes, elements, reg_param, coefficients);
         grad_evals = grad_evals + 1;
         
         % Check for convergence
@@ -44,7 +68,7 @@ function sobolev_gradient_newton_method(nx, ny, Lx, Ly, A, x0, y0, sigma)
         t = 1;
         while true
             u_new = u + t * delta_u;
-            [grad_new, ~] = compute_gradient_hessian(u_new, nodes, elements, reg_param);
+            [grad_new, ~] = compute_gradient_hessian(u_new, nodes, elements, reg_param, coefficients);
             if norm(grad_new) <= (1 - alpha * t) * grad_norm
                 break;
             end
@@ -53,16 +77,49 @@ function sobolev_gradient_newton_method(nx, ny, Lx, Ly, A, x0, y0, sigma)
         
         % Update the solution
         u = u_new;
+        
+        % Update coefficients with the new solution
+        for elem = 1:size(elements, 1)
+            element_nodes = elements(elem, :);
+            element_coords = nodes(element_nodes, :);
+            ue = u(element_nodes);
+            coefficients{elem} = calculate_coefficients(element_coords, ue);
+        end
     end
     
     % Reshape the solution to its original 2D form
     psi_solution = u;
     
+    % Plot the gradient on the nodes
+    figure;
+    trisurf(elements, nodes(:,1), nodes(:,2), grad, 'EdgeColor', 'none');
+    colorbar;
+    title('Gradient on the Nodes');
+    xlabel('x');
+    ylabel('y');
+    zlabel('Gradient');
+    
+    % Compute and plot the gradient on the edge elements
+    edge_gradients = zeros(size(elements, 1), 1);
+    for elem = 1:size(elements, 1)
+        element_nodes = elements(elem, :);
+        element_coords = nodes(element_nodes, :);
+        ue = u(element_nodes);
+        edge_gradients(elem) = norm(compute_edge_gradient(ue, element_coords, coefficients{elem}));
+    end
+    figure;
+    trisurf(elements, nodes(:,1), nodes(:,2), edge_gradients, 'EdgeColor', 'none');
+    colorbar;
+    title('Gradient on the Edge Elements');
+    xlabel('x');
+    ylabel('y');
+    zlabel('Gradient');
+    
     % Plot the final solution
     figure;
     trisurf(elements, nodes(:,1), nodes(:,2), psi_solution, 'EdgeColor', 'none');
     colorbar;
-    title('Solution of the PDE using Newton Method');
+    title('Final Solution of the PDE using Newton Method');
     xlabel('x');
     ylabel('y');
     zlabel('psi');
@@ -100,26 +157,7 @@ function [nodes, elements] = create_morley_grid(nx, ny, Lx, Ly)
     elements = idx(elements);
 end
 
-function psi = generate_eddy_initial_condition(nodes, A, x0, y0, sigma)
-    % Generate a Gaussian initial condition for the stream function psi
-    % nodes: coordinates of the Morley mesh nodes
-    % A: amplitude of the eddy
-    % x0, y0: center of the eddy
-    % sigma: standard deviation of the Gaussian
-
-    % Compute the Gaussian initial condition at the Morley mesh nodes
-    psi = A * exp(-((nodes(:,1) - x0).^2 + (nodes(:,2) - y0).^2) / (2 * sigma^2));
-    
-    % Plot the initial condition for visualization
-    figure;
-    scatter(nodes(:,1), nodes(:,2), 20, psi, 'filled');
-    colorbar;
-    title('Initial Condition for Stream Function \psi on Morley Mesh');
-    xlabel('x');
-    ylabel('y');
-end
-
-function [grad, hess] = compute_gradient_hessian(u, nodes, elements, reg_param)
+function [grad, hess] = compute_gradient_hessian(u, nodes, elements, reg_param, coefficients)
     % Compute the gradient and Hessian of the energy functional for
     % stationary quasi-geostrophic flow in 2D
 
@@ -140,8 +178,15 @@ function [grad, hess] = compute_gradient_hessian(u, nodes, elements, reg_param)
         element_coords = nodes(element_nodes, :);
         ue = u(element_nodes);
         
-        % Compute the element gradient and Hessian
-        [elem_grad, elem_hess] = element_gradient_hessian(ue, element_coords);
+        % Compute the element gradient and Hessian for nodes
+        [elem_grad, elem_hess] = element_gradient_hessian_nodes(ue, element_coords);
+        
+        % Assemble into global gradient and Hessian
+        grad(element_nodes) = grad(element_nodes) + elem_grad;
+        hess(element_nodes, element_nodes) = hess(element_nodes, element_nodes) + elem_hess;
+        
+        % Compute the element gradient and Hessian for edges
+        [elem_grad, elem_hess] = element_gradient_hessian_edges(ue, element_coords, coefficients{elem});
         
         % Assemble into global gradient and Hessian
         grad(element_nodes) = grad(element_nodes) + elem_grad;
@@ -152,26 +197,49 @@ function [grad, hess] = compute_gradient_hessian(u, nodes, elements, reg_param)
     hess = hess + reg_param * speye(num_nodes);
 end
 
-function [elem_grad, elem_hess] = element_gradient_hessian(ue, element_coords)
-    % Compute the gradient and Hessian for a single element
+function coefficients = calculate_coefficients(element_coords, ue)
+    % Calculate the coefficients a, b, c, d, e, f for the Morley basis functions
+    % element_coords: coordinates of the element nodes
+    % ue: values of the degrees of freedom at the element nodes
+
+    % Solve for the coefficients using the node data
+    % Assume the basis function is of the form: phi = ax^2 + bxy + cy^2 + dx + ey + f
+    % We need to solve the system of equations for the coefficients
+    
+    % Construct the matrix for the system of equations
+    A = [element_coords(:,1).^2, element_coords(:,1).*element_coords(:,2), element_coords(:,2).^2, element_coords(:,1), element_coords(:,2), ones(size(element_coords, 1), 1)];
+    
+    % Solve for the coefficients
+    coefficients = A \ ue;
+end
+
+function [elem_grad, elem_hess] = element_gradient_hessian_nodes(ue, element_coords)
+    % Compute the gradient and Hessian for a single element based on nodes
     % ue: values of the degrees of freedom at the element nodes
     % element_coords: coordinates of the element nodes
+
+    % Check dimensions for matrix operations
+    if size(element_coords, 2) ~= 2
+        error('Dimension mismatch: element_coords should have 2 columns.');
+    end
+    if length(ue) ~= size(element_coords, 1)
+        error('Dimension mismatch: length of ue should match number of rows in element_coords.');
+    end
     
-    % Define the basis functions and their gradients
-    % (This will depend on the specific implementation of the Morley element)
-    
-    % Placeholder values for basis functions and their gradients
-    % These need to be replaced with the actual basis functions
-    phi = [1/3; 1/3; 1/3]; % Example basis functions
-    grad_phi = [1, 0; 0, 1; -1, -1]; % Example gradients of basis functions
+    % Compute the basis functions and their gradients (linear for nodes)
+    phi = ones(size(element_coords, 1), 1); % Placeholder linear basis function
+    grad_phi = [1, 0, 0; 0, 1, 0]; % Gradient of linear basis function for nodes with correct dimensions (2x3)
     
     % Compute the Jacobian of the element transformation
     J = [element_coords(2, :) - element_coords(1, :); element_coords(3, :) - element_coords(1, :)];
+    if size(J, 1) ~= size(J, 2)
+        error('Jacobian matrix must be square.');
+    end
     detJ = det(J);
     invJ = inv(J);
     
     % Compute the gradient of the stream function
-    grad_psi = invJ * (grad_phi' * ue);
+    grad_psi = invJ * grad_phi * ue;
     
     % Compute the potential vorticity q
     q = sum(grad_psi .^ 2, 1);
@@ -182,9 +250,117 @@ function [elem_grad, elem_hess] = element_gradient_hessian(ue, element_coords)
     
     % Compute the element gradient and Hessian
     for i = 1:3
-        elem_grad(i) = detJ * (grad_psi' * grad_phi(i, :)') + phi(i) * q;
+        elem_grad(i) = detJ * (grad_psi' * grad_phi(:, i)) + phi(i) * q;
         for j = 1:3
-            elem_hess(i, j) = detJ * (grad_phi(i, :) * grad_phi(j, :)');
+            elem_hess(i, j) = detJ * (grad_phi(:, i)' * grad_phi(:, j));
         end
     end
+end
+
+function [elem_grad, elem_hess] = element_gradient_hessian_edges(ue, element_coords, coefficients)
+    % Compute the gradient and Hessian for a single element based on edges
+    % ue: values of the degrees of freedom at the element nodes
+    % element_coords: coordinates of the element nodes
+    % coefficients: coefficients a, b, c, d, e, f for the Morley basis functions
+
+    % Check dimensions for matrix operations
+    if size(element_coords, 2) ~= 2
+        error('Dimension mismatch: element_coords should have 2 columns.');
+    end
+    if length(ue) ~= size(element_coords, 1)
+        error('Dimension mismatch: length of ue should match number of rows in element_coords.');
+    end
+    
+    % Extract the coefficients
+    a = coefficients(1);
+    b = coefficients(2);
+    c = coefficients(3);
+    d = coefficients(4);
+    e = coefficients(5);
+    f = coefficients(6);
+    
+    % Compute the basis functions and their gradients
+    phi = a * element_coords(:,1).^2 + b * element_coords(:,1) .* element_coords(:,2) + c * element_coords(:,2).^2 + d * element_coords(:,1) + e * element_coords(:,2) + f;
+    grad_phi = [2 * a * element_coords(:,1) + b * element_coords(:,2) + d, b * element_coords(:,1) + 2 * c * element_coords(:,2) + e]'; % Transposed for correct dimensions
+    
+    % Compute the Jacobian of the element transformation
+    J = [element_coords(2, :) - element_coords(1, :); element_coords(3, :) - element_coords(1, :)];
+    if size(J, 1) ~= size(J, 2)
+        error('Jacobian matrix must be square.');
+    end
+    detJ = det(J);
+    invJ = inv(J);
+    
+    % Compute the gradient of the stream function
+    grad_psi = invJ * (grad_phi * ue);
+    
+    % Compute the potential vorticity q
+    q = sum(grad_psi .^ 2, 1);
+    
+    % Initialize the element gradient and Hessian
+    elem_grad = zeros(3, 1);
+    elem_hess = zeros(3, 3);
+    
+    % Compute the element gradient and Hessian
+    for i = 1:3
+        elem_grad(i) = detJ * (grad_psi' * grad_phi(:, i)) + phi(i) * q;
+        for j = 1:3
+            elem_hess(i, j) = detJ * (grad_phi(:, i)' * grad_phi(:, j));
+        end
+    end
+end
+
+function edge_gradient = compute_edge_gradient(ue, element_coords, coefficients)
+    % Compute the gradient for edge elements
+    % ue: values of the degrees of freedom at the element nodes
+    % element_coords: coordinates of the element nodes
+    % coefficients: coefficients a, b, c, d, e, f for the Morley basis functions
+
+    % Check dimensions for matrix operations
+    if size(element_coords, 2) ~= 2
+        error('Dimension mismatch: element_coords should have 2 columns.');
+    end
+    if length(ue) ~= size(element_coords, 1)
+        error('Dimension mismatch: length of ue should match number of rows in element_coords.');
+    end
+    
+    % Extract the coefficients
+    a = coefficients(1);
+    b = coefficients(2);
+    c = coefficients(3);
+    d = coefficients(4);
+    e = coefficients(5);
+    f = coefficients(6);
+    
+    % Compute the basis functions and their gradients
+    grad_phi = [2 * a * element_coords(:,1) + b * element_coords(:,2) + d, b * element_coords(:,1) + 2 * c * element_coords(:,2) + e]'; % Transposed for correct dimensions
+    
+    % Compute the Jacobian of the element transformation
+    J = [element_coords(2, :) - element_coords(1, :); element_coords(3, :) - element_coords(1, :)];
+    invJ = inv(J);
+    
+    % Compute the gradient of the stream function
+    edge_gradient = invJ * (grad_phi * ue);
+end
+
+function psi = generate_sinusoidal_initial_condition_with_nodes(nodes, A, kx, ky)
+    % Generate a sinusoidal initial condition for the stream function psi
+    % nodes: Nx2 array of (x, y) coordinates
+    % A: amplitude of the sinusoidal wave
+    % kx, ky: wave numbers in x and y directions
+
+    % Extract x and y from nodes
+    x = nodes(:, 1);
+    y = nodes(:, 2);
+    
+    % Compute the sinusoidal initial condition
+    psi = A * sin(kx * x) .* sin(ky * y);
+    
+    % Plot the initial condition for visualization
+    figure;
+    scatter(x, y, 20, psi, 'filled');
+    colorbar;
+    title('Initial Condition for Stream Function \psi (Sinusoidal)');
+    xlabel('x');
+    ylabel('y');
 end
