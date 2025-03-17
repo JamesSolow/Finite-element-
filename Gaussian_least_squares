@@ -1,0 +1,63 @@
+import numpy as np
+from scipy.optimize import least_squares
+
+# Constants and initial conditions
+u0 = 1.0
+sigma = 1.0
+D_eddy = 0.1
+v_x = 0.1
+v_y = 0.1
+N = 10  # Number of Gaussian functions
+
+# Initial Gaussian parameters
+A = np.full(N, u0 / N)
+x = np.linspace(-5, 5, N)
+y = np.linspace(-5, 5, N)
+sigma_i = np.full(N, sigma)
+
+# Define the Gaussian function
+def gaussian(x, y, A, x0, y0, sigma):
+    return A * np.exp(-((x - x0)**2 + (y - y0)**2) / (2 * sigma**2))
+
+# Define the error function for least squares
+def error(params, x, y, t, u_exact):
+    A = params[:N]
+    x0 = params[N:2*N]
+    y0 = params[2*N:3*N]
+    sigma = params[3*N:4*N]
+    u_approx = np.sum([gaussian(x, y, A[i], x0[i], y0[i], sigma[i]) for i in range(N)], axis=0)
+    return u_exact - u_approx
+
+# Time stepping
+dt = 0.01
+t_max = 1.0
+t = np.arange(0, t_max, dt)
+
+# Initial exact solution (Gaussian distribution)
+x_grid, y_grid = np.meshgrid(np.linspace(-10, 10, 100), np.linspace(-10, 10, 100))
+u_exact = u0 / (2 * np.pi * sigma**2) * np.exp(-(x_grid**2 + y_grid**2) / (2 * sigma**2))
+
+# Optimization loop
+for time in t:
+    params = np.concatenate([A, x, y, sigma_i])
+    res = least_squares(error, params, args=(x_grid, y_grid, time, u_exact))
+    A, x, y, sigma_i = res.x[:N], res.x[N:2*N], res.x[2*N:3*N], res.x[3*N:4*N]
+    
+    # Update centers due to advection
+    x += v_x * dt
+    y += v_y * dt
+    
+    # Update widths due to diffusion
+    sigma_i = np.sqrt(sigma_i**2 + 2 * D_eddy * dt)
+
+# Final solution
+u_approx = np.sum([gaussian(x_grid, y_grid, A[i], x[i], y[i], sigma_i[i]) for i in range(N)], axis=0)
+
+# Plot the results
+import matplotlib.pyplot as plt
+plt.contourf(x_grid, y_grid, u_approx, levels=50, cmap='viridis')
+plt.colorbar(label='Concentration')
+plt.xlabel('x')
+plt.ylabel('y')
+plt.title('Convection-Diffusion Solution')
+plt.show()
