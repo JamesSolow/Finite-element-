@@ -1,0 +1,118 @@
+% Define parameters and grid
+L = 1.0;  % Length of the domain (assuming unit square)
+N = 50;   % Number of grid points along each dimension
+dx = L / (N-1); % Grid spacing
+
+% Create a 2D grid
+[x, y] = meshgrid(linspace(0, L, N), linspace(0, L, N));
+
+% Define Gaussian basis functions (using a simple Gaussian form)
+sigma = 0.1;  % Width of Gaussian functions
+phi = @(x, y, x0, y0) exp(-((x - x0).^2 + (y - y0).^2) / (2 * sigma^2));
+
+% Number of basis functions (we'll use 10 for simplicity)
+num_basis = 10;
+basis_functions = zeros(num_basis, N, N);
+
+% Define Gaussian basis functions on the grid
+for i = 1:num_basis
+    x0 = rand * L;  % Random center for Gaussian
+    y0 = rand * L;  % Random center for Gaussian
+    basis_functions(i, :, :) = phi(x, y, x0, y0);
+end
+
+% Initialize the velocity and vorticity fields (random guess)
+alpha = rand(num_basis, 1);  % Coefficients for velocity field (scalar)
+beta = rand(num_basis, 1);   % Coefficients for vorticity field (scalar)
+
+% Velocity field expansion (in terms of basis functions)
+v_field = zeros(N, N);
+for i = 1:num_basis
+    v_field = v_field + alpha(i) * squeeze(basis_functions(i, :, :));
+end
+
+% Vorticity field expansion (in terms of basis functions)
+omega_field = zeros(N, N);
+for i = 1:num_basis
+    omega_field = omega_field + beta(i) * squeeze(basis_functions(i, :, :));
+end
+
+% Define the functional for the system
+% Assuming functional F[v, omega] (simplified for demonstration)
+rho = 1.0;  % Density
+nu = 0.01;  % Viscosity
+F = @(v, omega) (1/2) * sum(sum(rho * v.^2 + nu * (gradient(gradient(v))).^2 + omega.^2));
+
+% Define the gradient of the functional with respect to alpha and beta
+grad_F_alpha = zeros(num_basis, 1);
+grad_F_beta = zeros(num_basis, 1);
+
+% Compute gradients (simplified for demonstration)
+for i = 1:num_basis
+    % Gradient with respect to alpha (velocity field)
+    grad_F_alpha(i) = sum(sum(2 * rho * v_field .* squeeze(basis_functions(i, :, :)) + 2 * nu * (gradient(gradient(v_field))) .* squeeze(basis_functions(i, :, :))));
+    
+    % Gradient with respect to beta (vorticity field)
+    grad_F_beta(i) = sum(sum(2 * omega_field .* squeeze(basis_functions(i, :, :)) + 2 * nu * (gradient(gradient(omega_field))) .* squeeze(basis_functions(i, :, :))));
+end
+
+% Solve using Newton's method
+max_iter = 100;  % Maximum iterations
+tolerance = 1e-6;  % Convergence tolerance
+
+for iter = 1:max_iter
+    % Compute the Hessian (second derivatives) for alpha and beta
+    Hessian_alpha = zeros(num_basis, num_basis);
+    Hessian_beta = zeros(num_basis, num_basis);
+    
+    % Compute the Hessians (simplified for demonstration)
+    for i = 1:num_basis
+        for j = 1:num_basis
+            Hessian_alpha(i, j) = sum(sum(2 * rho * squeeze(basis_functions(i, :, :)) .* squeeze(basis_functions(j, :, :)) + 2 * nu * (gradient(gradient(squeeze(basis_functions(i, :, :))))) .* squeeze(basis_functions(j, :, :))));
+            Hessian_beta(i, j) = sum(sum(2 * squeeze(basis_functions(i, :, :)) .* squeeze(basis_functions(j, :, :)) + 2 * nu * (gradient(gradient(squeeze(basis_functions(i, :, :))))) .* squeeze(basis_functions(j, :, :))));
+        end
+    end
+    
+    % Update coefficients using Newton's method
+    delta_alpha = -Hessian_alpha \ grad_F_alpha;
+    delta_beta = -Hessian_beta \ grad_F_beta;
+    
+    % Update the coefficients
+    alpha = alpha + delta_alpha;
+    beta = beta + delta_beta;
+    
+    % Recompute the velocity and vorticity fields with updated coefficients
+    v_field_new = zeros(N, N);
+    omega_field_new = zeros(N, N);
+    
+    for i = 1:num_basis
+        v_field_new = v_field_new + alpha(i) * squeeze(basis_functions(i, :, :));
+        omega_field_new = omega_field_new + beta(i) * squeeze(basis_functions(i, :, :));
+    end
+    
+    % Compute the difference between old and new fields
+    diff_v = max(max(abs(v_field_new - v_field)));
+    diff_omega = max(max(abs(omega_field_new - omega_field)));
+    
+    % Check convergence
+    if diff_v < tolerance && diff_omega < tolerance
+        disp(['Converged after ' num2str(iter) ' iterations']);
+        break;
+    end
+    
+    % Update fields for the next iteration
+    v_field = v_field_new;
+    omega_field = omega_field_new;
+end
+
+% Plot the final velocity and vorticity fields
+figure;
+subplot(1, 2, 1);
+contourf(x, y, v_field, 20);
+title('Velocity Field');
+colorbar;
+
+subplot(1, 2, 2);
+contourf(x, y, omega_field, 20);
+title('Vorticity Field');
+colorbar;
